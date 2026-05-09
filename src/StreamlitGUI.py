@@ -6,6 +6,40 @@ import time
 # --- 1. SETUP & CONNECTION ---
 st.set_page_config(page_title="Nexus DB Control", layout="wide")
 
+# ============================================================
+# SECURITY: NoSQL Injection Prevention Utilities (Task 3)
+# ============================================================
+def sanitize_input(user_input, input_type="string"):
+    """
+    Sanitize user input to prevent NoSQL injection attacks.
+    
+    Args:
+        user_input: Raw input from Streamlit widget
+        input_type: One of "string", "int", "float"
+    
+    Returns:
+        Sanitized value (never a dict, list, or object)
+    
+    How this prevents injection:
+        If a user enters {"$ne": null}, str() converts it to the literal
+        string '{"$ne": null}' — which is NOT interpreted as a MongoDB
+        operator. The database treats it as plain text data.
+    """
+    if user_input is None:
+        return ""
+    value = str(user_input).strip()
+    if input_type == "int":
+        try:
+            return int(value)
+        except ValueError:
+            return 0
+    elif input_type == "float":
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    return value
+
 @st.cache_resource
 def init_connection():
     client = MongoClient("mongodb://admin:password@localhost:27017/")
@@ -158,14 +192,15 @@ with col_alert2:
 st.markdown("---")
 
 # --- 3. PRE-BAKED QUERIES (READ OPERATIONS) ---
-st.header("2. Common Operations (Pre-Indexed)")
+st.header("2. Common Operations")
 
 # FIXED: Removed Tab E so this section is strictly for reporting/searching
-tab_a, tab_b, tab_c, tab_d = st.tabs([
-    "A: Driver Incidents", 
-    "B: Shipment/Customer Search", 
-    "C: Top 10 High-Value Shipments", 
-    "D: Vehicle Maintenance"
+tab_a, tab_b, tab_c, tab_d, tab_e = st.tabs([
+    "A: Driver Incidents",
+    "B: Shipment/Customer Search",
+    "C: Top 10 High-Value Shipments",
+    "D: Vehicle Maintenance",
+    "E: OCC Simulation"
 ])
 # Query A: Search driver by ID and show their incidents
 with tab_a:
@@ -175,6 +210,8 @@ with tab_a:
     st.markdown("#### Individual Driver Lookup")
     drv_search = st.text_input("Enter Driver ID:", placeholder="e.g., DRV_9084")
     if st.button("Search Driver"):
+        # Task 3: Sanitize input to prevent NoSQL injection
+        drv_search = sanitize_input(drv_search, "string")
 
         start_time = time.time() # ⏱️ START TIMER
         incidents = list(db.incident_reports.find({"related_ids.driver_id": drv_search}, {"_id": 0}))
@@ -207,65 +244,25 @@ with tab_a:
         run_report = st.button("Generate Report")
         
     if run_report:
-        
-        pipeline = [
-            {
-                "$match": {
-                    "incident_details.timestamp": {"$regex": f"^{selected_month}"}
-                }
-            },
-            {
-                "$group": {
-                    "_id": "$related_ids.driver_id",
-                    "total_damage_pkr": {"$sum": "$insurance_claim.damage_est_pkr"},
-                    # FIXED: Just pushing the raw string ID instead of an object
-                    "incident_list": {"$push": "$_id"} 
-                }
-            },
-            {
-                "$lookup": {
-                    "from": "driver_performance",
-                    "localField": "_id",
-                    "foreignField": "_id",
-                    "as": "driver_info"
-                }
-            },
-            {"$unwind": "$driver_info"},
-            {
-                "$project": {
-                    "Driver ID": "$_id",
-                    "Name": "$driver_info.name",
-                    "Safety Score": "$driver_info.safety_score",
-                    "Total Damage Caused (PKR)": "$total_damage_pkr",
-                    "Incidents": "$incident_list",
-                    "_id": 0
-                }
-            },
-            {"$sort": {"Total Damage Caused (PKR)": -1}},
-            {"$limit": 20}
-        ]
-        
-         
+        # Task 2: REPLACED — Use MongoDB View (vw_monthly_liability) instead of 7-stage pipeline
         start_time = time.time() # ⏱️ START TIMER
-        liability_data = list(db.incident_reports.aggregate(pipeline))
+        liability_data = list(db.vw_monthly_liability.find({}))
         end_time = time.time() # ⏱️ STOP TIMER
-
-        exec_ms = (end_time - start_time) * 1000  
+        exec_ms = (end_time - start_time) * 1000
 
         if liability_data:
-            st.success(f"Generated damage liability report for {selected_month}. (Execution Time: {exec_ms:.2f} ms)")
+            st.success(f"Generated damage liability report for {selected_month} using View `vw_monthly_liability`. (Execution Time: {exec_ms:.2f} ms)")
             
             df_liability = pd.DataFrame(liability_data)
-            df_liability['Total Damage Caused (PKR)'] = df_liability['Total Damage Caused (PKR)'].apply(lambda x: f"PKR {x:,.2f}")
-            df_liability = df_liability[['Driver ID', 'Name', 'Safety Score', 'Total Damage Caused (PKR)', 'Incidents']]
+            df_liability['TotalDamagePKR'] = df_liability['TotalDamagePKR'].apply(lambda x: f"PKR {x:,.2f}")
+            df_liability = df_liability[['DriverID', 'DriverName', 'SafetyScore', 'TotalDamagePKR', 'IncidentCount', 'IncidentList']]
             
             st.dataframe(
-                df_liability, 
-                use_container_width=True, 
+                df_liability,
+                use_container_width=True,
                 hide_index=True,
                 column_config={
-                    # Streamlit will now render the list of strings beautifully
-                    "Incidents": st.column_config.ListColumn("Incident IDs")
+                    "IncidentList": st.column_config.ListColumn("Incident IDs")
                 }
             )
         else:
@@ -278,8 +275,10 @@ with tab_b:
     with col_s1:
         ship_search = st.text_input("Find by Shipment ID:", placeholder="e.g., NEX-SHIP-000000")
         if st.button("Search Shipment"):
+            # Task 3: Sanitize input to prevent NoSQL injection
+            ship_search = sanitize_input(ship_search, "string")
             start_time = time.time() # ⏱️ START TIMER
-            shipment = db.shipment_ops.find_one({"_id": ship_search.strip()})
+            shipment = db.shipment_ops.find_one({"_id": ship_search})
             end_time = time.time() # ⏱️ STOP TIMER
             exec_ms = (end_time - start_time) * 1000  
             if shipment:
@@ -310,9 +309,11 @@ with tab_b:
     with col_s2:
         cust_search = st.text_input("Find by Customer ID:", placeholder="e.g., CUST_uOcdZ_PK")
         if st.button("Search Customer Operations"):
+            # Task 3: Sanitize input to prevent NoSQL injection
+            cust_search = sanitize_input(cust_search, "string")
             start_time = time.time() # ⏱️ START TIMER
             cust_shipments = list(db.shipment_ops.find(
-                {"customer_id": cust_search}, 
+                {"customer_id": cust_search},
                 {"_id": 1, "customs_clearance.status": 1, "assigned_driver": 1}
             ).limit(50)) 
             end_time = time.time() # ⏱️ STOP TIMER
@@ -356,6 +357,8 @@ with tab_d:
     st.subheader("Vehicle Maintenance History")
     veh_search = st.text_input("Enter Vehicle ID:", placeholder="e.g., VEH_DHW_15")
     if st.button("Search Vehicle"):
+        # Task 3: Sanitize input to prevent NoSQL injection
+        veh_search = sanitize_input(veh_search, "string")
         start_time = time.time() # ⏱️ START TIMER
         maintenance = list(db.maintenance_history.find({"vehicle_id": veh_search}, {"_id": 0}))
         end_time = time.time() # ⏱️ STOP TIMER
@@ -366,6 +369,122 @@ with tab_d:
             st.dataframe(df_maint, use_container_width=True, hide_index=True)
         else:
             st.info(f"No maintenance history found for this vehicle. (Execution Time: {exec_ms:.2f} ms)")
+
+# ============================================================
+# QUERY E: OCC (Optimistic Concurrency Control) SIMULATION
+# ============================================================
+with tab_e:
+    st.subheader("Optimistic Concurrency Control (OCC) Simulation")
+    st.markdown("""
+    This simulation demonstrates how OCC prevents **lost updates** when two dispatchers
+    attempt to modify the same document simultaneously. Each document carries a `__v`
+    (version) field. An update only succeeds if the version matches what the dispatcher
+    read — otherwise, the second update is rejected.
+    """)
+
+    # --- Initialize Mock Document & Session State ---
+    if "occ_initialized" not in st.session_state:
+        st.session_state.occ_initialized = False
+    if "occ_dispatcher_a_version" not in st.session_state:
+        st.session_state.occ_dispatcher_a_version = None
+    if "occ_dispatcher_b_version" not in st.session_state:
+        st.session_state.occ_dispatcher_b_version = None
+
+    col_init1, col_init2 = st.columns([1, 3])
+    with col_init1:
+        if st.button("🔄 Initialize TEST-123 Document"):
+            db.occ_demo.delete_one({})  # Clear any existing data
+            db.occ_demo.insert_one({
+                "_id": "TEST-123",
+                "status": "Pending",
+                "__v": 1
+            })
+            st.session_state.occ_initialized = True
+            st.session_state.occ_dispatcher_a_version = None
+            st.session_state.occ_dispatcher_b_version = None
+            st.rerun()
+
+    if st.session_state.occ_initialized:
+        # --- Fetch Current DB State ---
+        current_doc = db.occ_demo.find_one({"_id": "TEST-123"})
+        db_version = current_doc.get("__v", 1)
+        current_status = current_doc.get("status", "Unknown")
+
+        st.markdown(f"**Current Database State:** `_id: TEST-123` | **Status:** `{current_status}` | **Version:** `__v = {db_version}`")
+        st.markdown("---")
+
+        # --- Two Dispatcher Columns ---
+        disp_a, disp_b = st.columns(2)
+
+        with disp_a:
+            st.markdown("### 👤 Dispatcher A")
+            st.caption(f"Your captured version: `{st.session_state.occ_dispatcher_a_version}`")
+            
+            # "Read" button — captures the current DB version for this dispatcher
+            if st.button("📖 Read Document (Capture Version)", key="disp_a_read"):
+                st.session_state.occ_dispatcher_a_version = db_version
+                st.success(f"📖 Document read. Captured version: `__v = {db_version}`")
+                st.rerun()
+            
+            target_status_a = st.radio("Set Status:", ["In-Transit", "Delayed"], key="disp_a_status", index=0, disabled=st.session_state.occ_dispatcher_a_version is None)
+            
+            if st.button("Update Status", key="disp_a_btn", disabled=st.session_state.occ_dispatcher_a_version is None):
+                stored_version = st.session_state.occ_dispatcher_a_version
+                # Verify the version hasn't changed since we read it
+                current_db_doc = db.occ_demo.find_one({"_id": "TEST-123"})
+                current_db_v = current_db_doc.get("__v", 1)
+                
+                if stored_version != current_db_v:
+                    st.error(f"❌ **OCC Conflict Detected!** You read version `{stored_version}`, but the database is now at version `{current_db_v}`. Lost update prevented.")
+                else:
+                    # Version matches — proceed with update
+                    result = db.occ_demo.update_one(
+                        {"_id": "TEST-123", "__v": stored_version},
+                        {"$set": {"status": target_status_a}, "$inc": {"__v": 1}}
+                    )
+                    if result.modified_count == 0:
+                        st.error(f"❌ **OCC Conflict Detected!** Another dispatcher updated the document first. Lost update prevented.")
+                    else:
+                        st.session_state.occ_dispatcher_a_version = None  # Reset
+                        st.success(f"✅ Updated to `{target_status_a}`. New version: `__v = {current_db_v + 1}`")
+                        st.rerun()
+
+        with disp_b:
+            st.markdown("### 👤 Dispatcher B")
+            st.caption(f"Your captured version: `{st.session_state.occ_dispatcher_b_version}`")
+            
+            # "Read" button — captures the current DB version for this dispatcher
+            if st.button("📖 Read Document (Capture Version)", key="disp_b_read"):
+                st.session_state.occ_dispatcher_b_version = db_version
+                st.success(f"📖 Document read. Captured version: `__v = {db_version}`")
+                st.rerun()
+            
+            target_status_b = st.radio("Set Status:", ["In-Transit", "Delayed"], key="disp_b_status", index=1, disabled=st.session_state.occ_dispatcher_b_version is None)
+            
+            if st.button("Update Status", key="disp_b_btn", disabled=st.session_state.occ_dispatcher_b_version is None):
+                stored_version = st.session_state.occ_dispatcher_b_version
+                # Verify the version hasn't changed since we read it
+                current_db_doc = db.occ_demo.find_one({"_id": "TEST-123"})
+                current_db_v = current_db_doc.get("__v", 1)
+                
+                if stored_version != current_db_v:
+                    st.error(f"❌ **OCC Conflict Detected!** You read version `{stored_version}`, but the database is now at version `{current_db_v}`. Lost update prevented.")
+                else:
+                    # Version matches — proceed with update
+                    result = db.occ_demo.update_one(
+                        {"_id": "TEST-123", "__v": stored_version},
+                        {"$set": {"status": target_status_b}, "$inc": {"__v": 1}}
+                    )
+                    if result.modified_count == 0:
+                        st.error(f"❌ **OCC Conflict Detected!** Another dispatcher updated the document first. Lost update prevented.")
+                    else:
+                        st.session_state.occ_dispatcher_b_version = None  # Reset
+                        st.success(f"✅ Updated to `{target_status_b}`. New version: `__v = {current_db_v + 1}`")
+                        st.rerun()
+
+        # --- Refresh Button ---
+        if st.button("🔍 Refresh Document State"):
+            st.rerun()
 
 # Query E: The Real-World CRUD Dispatch Form
 # --- NEW SECTION: ACTION TERMINAL (WRITE OPERATIONS) ---
@@ -406,17 +525,17 @@ with st.container(): # Using a container to make it pop visually
             st.markdown("##### Shipment Meta")
             import time
             auto_ship_id = f"NEX-SHIP-{int(time.time())}"
-            ship_id = st.text_input("Shipment ID", value=auto_ship_id)
+            ship_id = sanitize_input(st.text_input("Shipment ID", value=auto_ship_id))
             
             # FIXED: Dynamic Route Dropdown!
             path_id = st.selectbox("Route", options=list(route_options.keys()), format_func=lambda x: route_options[x])
             
-            value = st.number_input("Value (PKR)", min_value=0, step=5000, value=286103)
-            
+            value = sanitize_input(st.number_input("Value (PKR)", min_value=0, step=5000, value=286103))
+
         with col_f3:
             st.markdown("##### Primary Cargo")
-            item_desc = st.text_input("Description", placeholder="e.g., electronic parts")
-            item_qty = st.number_input("Quantity", min_value=1, value=50)
+            item_desc = sanitize_input(st.text_input("Description", placeholder="e.g., electronic parts"))
+            item_qty = sanitize_input(st.number_input("Quantity", min_value=1, value=50))
             vendor_id = st.selectbox("Vendor ID", options=vendors if vendors else ["VND_UNKNOWN"])
 
         submitted = st.form_submit_button("Deploy Shipment 🚀")
