@@ -23,9 +23,9 @@ The database employs advanced NoSQL modeling techniques to ensure data locality 
 
 ###  Streamlit Management Dashboard
 An interactive web-based interface providing:
-* **Real-time Analytics:** Live KPIs and database statistics.
-* **Advanced Querying:** Pre-built, optimized MQL aggregations for rapid insights.
-* **Dispatch Terminal:** An interface for real-time shipment operations and dispatch management.
+* **Global Operations Overview:** Real-time KPIs and anomaly detection (e.g., IoT telemetry alerts for engine temperatures).
+* **Common Operations (Query Center):** Deep-dive analytical tabs for Driver Incidents, Shipment/Customer lookups, High-Value shipment tracking, and Vehicle maintenance history.
+* **Dispatch Terminal:** A command & control interface for real-time shipment deployment, including driver, vehicle, and route assignment.
 
 
 ---
@@ -57,18 +57,26 @@ The system runs in a containerized environment to ensure consistency across deve
 1. **Start the Container**
    ```bash
    docker compose up -d
-  
+   ```
+
 2. **Access MongoDB Shell**
-    ```bash
-     docker exec -it nexus-mongodb mongosh -u admin -p password --authenticationDatabase admin
+   ```bash
+   docker exec -it nexus-mongodb mongosh -u admin -p password --authenticationDatabase admin
+   ```
+
+3. **Launch Streamlit Dashboard**
+   ```bash
+   streamlit run src/StreamlitGUI.py
+   ```
+
 Note: The Docker Compose file is specifically built for the Fedora distribution of Linux. You may need to change the volume mapping section to better suit your Operating System.
+
 ### Technical Stack
 
     Language: Python 3.10 (Data generation using Faker)
-
+    Web Framework: Streamlit
     Database: MongoDB 5.0
-
+    Data Visualization: Pandas, Plotly Express
     Modeling Tool: PlantUML
-
     Environment: Docker
    
